@@ -23,16 +23,18 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Control
 import Control.Applicative
 
+import Data.Maybe
 import Data.Word
 import Data.String
 import Data.Char hiding (isSpace, isDigit)
+
 
 --Types--
 
 type ServerName = ByteString
 
 data IRCMsg = IRCMsg { msgPrefix  :: Maybe (Either UserInfo ServerName)
-                     , msgCmd :: Either ByteString (Char, Char, Char)
+                     , msgCmd     :: Either ByteString (Char, Char, Char)
                      , msgParams  :: [ByteString]
                      , msgTrail   :: ByteString
                      }
@@ -40,7 +42,7 @@ data IRCMsg = IRCMsg { msgPrefix  :: Maybe (Either UserInfo ServerName)
 
 
 data UserInfo = UserInfo { userNick  :: ByteString
-                         , userIdent :: Maybe ByteString
+                         , userName  :: Maybe ByteString
                          , userHost  :: Maybe ByteString
                          }
               deriving (Eq, Show, Read)
@@ -56,6 +58,7 @@ type IRCNode m = IRCSource m -> IRCSink m -> m ()
 data IRCClientSettings = IRCClientSettings { ircHost :: String
                                            , ircPort :: Word16
                                            , ircNick :: ByteString
+                                           , ircUser :: ByteString
                                            , ircRealName :: ByteString
                                            , ircPass :: Maybe ByteString
                                            }
@@ -69,10 +72,8 @@ data IRCServerSettings = IRCServerSettings { serverHost :: HostPreference
 sourceIRC :: (MonadIO m, MonadThrow m) => Socket -> IRCSource m
 sourceIRC s = sourceSocket s $= ircParseInput
 
-
 sinkIRC :: MonadIO m => Socket -> IRCSink m
 sinkIRC s = ircSerializeOutput =$ sinkSocket s
-
 
 ircParseInput :: (MonadIO m, MonadThrow m) => Conduit ByteString m IRCMsg
 ircParseInput = C.sequence (sinkParser ircLine)
@@ -88,10 +89,10 @@ ircSerializeOutput = do
               Nothing -> ""
               Just (Right serv) -> ':' `cons` serv
               Just (Left info) -> ':' `cons` userNick info
-                                  `append` maybeIdent
+                                  `append` maybeUser
                                   `append` maybeHost
                 where 
-                  maybeIdent = maybe "" ('!' `cons`) (userIdent info)
+                  maybeUser  = maybe "" ('!' `cons`) (userName info)
                   maybeHost  = maybe "" ('@' `cons`) (userHost info)
       
             command = ' ' `cons` either id 
@@ -111,13 +112,20 @@ runIRCClient :: (MonadIO m, MonadBaseControl IO m, MonadThrow m) =>
 runIRCClient s client = 
   runTCPClient ClientSettings{clientPort = fromIntegral (ircPort s), 
                               clientHost = ircHost s}
-  $ \src snk ->
-    client inp $ (ircSerializeOutput =$ snk)
+    $ \src snk -> 
+      let inp = src $= ircParseInput
+          out = ircSerializeOutput =$ snk  
+      in client inp (connect =$ out)
   where
     connect = do
-      yield $ IRCMsg {msgPrefix = Nothing, msgCommand = "
-    inp = src $= ircParseInput
-    out = ircParseOutput =$ snk 
+      case ircPass s of
+        Just pass -> yield $ msg "PASS" [pass] ""
+        Nothing   -> return ()
+      yield $ msg "NICK" [ircNick s] ""
+      yield $ msg "USER" [ircUser s, "*", "*"] (ircRealName s)
+      maybe (C.Done Nothing ()) yield =<< await
+      
+    msg cmd params trail = IRCMsg Nothing (Left cmd) params trail
 
 
 
@@ -139,9 +147,9 @@ isNickChar c = isNonWhite c && c /= '!' && c /= '@'
 
 nick = takeWhile1 isNickChar
 
-isIdentChar c = isNonWhite c && c /= '@'
+isUserChar c = isNonWhite c && c /= '@'
 
-ident = takeWhile1 isIdentChar
+ident = takeWhile1 isUserChar
 
 host = takeWhile1 isNonWhite
 
