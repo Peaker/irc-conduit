@@ -24,6 +24,7 @@ import Control.Monad.Trans.Control
 import Control.Applicative
 
 import Data.Maybe
+import Data.Function
 import Data.Word
 import Data.String
 import Data.Char hiding (isSpace, isDigit)
@@ -123,8 +124,7 @@ runIRCClient s client =
         Nothing   -> return ()
       yield $ msg "NICK" [ircNick s] ""
       yield $ msg "USER" [ircUser s, "*", "*"] (ircRealName s)
-      maybe (C.Done Nothing ()) yield =<< await
-      
+      fix $ \p -> NeedInput (HaveOutput p (return ())) (C.Done Nothing ())
     msg cmd params trail = IRCMsg Nothing (Left cmd) params trail
 
 
