@@ -11,7 +11,7 @@ module Network.IRC.Conduit.Raw
         ,IRCClientSettings, runIRCClient
         ) where
 import Network.Socket
-import Data.Conduit as C
+import Data.Conduit
 import Data.Conduit.Network
 import Data.Conduit.Attoparsec
 import Data.Attoparsec.Char8 as Char8
@@ -83,7 +83,7 @@ ircSerializeOutput :: MonadIO m => Conduit IRCMsg m ByteString
 ircSerializeOutput = do
   mayMsg <- await
   case mayMsg of
-    Nothing  -> C.Done Nothing ()
+    Nothing  -> return ()
     Just msg -> yield $ BS.concat [prefix, command, params, trail, "\r\n"]
       
       where prefix = case msgPrefix msg of
@@ -124,7 +124,7 @@ runIRCClient s client =
         Nothing   -> return ()
       yield $ msg "NICK" [ircNick s] ""
       yield $ msg "USER" [ircUser s, "*", "*"] (ircRealName s)
-      fix $ \p -> NeedInput (HaveOutput p (return ())) (C.Done Nothing ())
+      forever $ await >>= maybe (return ()) yield
     msg cmd params trail = IRCMsg Nothing (Left cmd) params trail
 
 
