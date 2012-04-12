@@ -68,6 +68,7 @@ ircParseInput = C.sequence (sinkParser ircLine)
 ircSerializeOutput :: MonadIO m => Conduit IRCMsg m ByteString
 ircSerializeOutput = undefined
 
+--todo: send pass/user/nick
 runIRCClient :: (MonadIO m, MonadBaseControl IO m, MonadThrow m) => 
        IRCClientSettings -> IRCNode m -> m ()
 runIRCClient IRCClientSettings{ircHost = h, ircPort = p} client = 
@@ -113,7 +114,6 @@ command = eitherP alphaComm numComm
         numComm   = (,,) <$> satisfy isDigit
                          <*> satisfy isDigit
                          <*> satisfy isDigit
-
 
 params = spaces >> (param `sepBy` spaces) 
   where param = cons
