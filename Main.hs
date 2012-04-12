@@ -1,11 +1,11 @@
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts, OverloadedStrings #-}
 import Network.Socket
 import Data.Conduit as C
 import Data.Conduit.Network
 import Data.Conduit.Attoparsec
 import Data.Attoparsec.Char8 as Char8
 import qualified Data.Attoparsec as Word8
-import Data.ByteString.Char8 (ByteString, cons)
+import Data.ByteString.Char8 as BS
 
 import Control.Monad
 import Control.Monad.IO.Class
@@ -13,16 +13,17 @@ import Control.Monad.Trans.Control
 import Control.Applicative
 
 import Data.Word
+import Data.String
 import Data.Char hiding (isSpace, isDigit)
 
 --Types--
 
 type ServerName = ByteString
 
-data IRCMsg = IRCMsg { inpPrefix  :: Maybe (Either UserInfo ServerName)
-                     , inpCommand :: Either ByteString (Char, Char, Char)
-                     , inpParams  :: [ByteString]
-                     , inpMsg     :: ByteString
+data IRCMsg = IRCMsg { msgPrefix  :: Maybe (Either UserInfo ServerName)
+                     , msgCommand :: Either ByteString (Char, Char, Char)
+                     , msgParams  :: [ByteString]
+                     , msgTrail   :: ByteString
                      }
             deriving (Eq, Show, Read)
 
@@ -66,7 +67,32 @@ ircParseInput :: (MonadIO m, MonadThrow m) => Conduit ByteString m IRCMsg
 ircParseInput = C.sequence (sinkParser ircLine)
 
 ircSerializeOutput :: MonadIO m => Conduit IRCMsg m ByteString
-ircSerializeOutput = undefined
+ircSerializeOutput = do
+  mayMsg <- await
+  case mayMsg of
+    Nothing  -> C.Done Nothing ()
+    Just msg -> yield $ BS.concat [prefix, command, params, trail, "\r\n"]
+      
+      where prefix = case msgPrefix msg of
+              Nothing -> ""
+              Just (Right serv) -> ':' `cons` serv
+              Just (Left info) -> ':' `cons` userNick info
+                                  `append` maybeIdent
+                                  `append` maybeHost
+                where 
+                  maybeIdent = maybe "" ('!' `cons`) (userIdent info)
+                  maybeHost  = maybe "" ('@' `cons`) (userHost info)
+      
+            command = ' ' `cons` either id 
+                      (\(a,b,c) -> fromString [a,b,c]) (msgCommand msg)
+      
+            params = ' ' `cons` intercalate " " (msgParams msg)
+      
+            t = msgTrail msg
+            trail
+              | BS.null t = ""
+              | otherwise = " :" `append` msgTrail msg
+                      
 
 --todo: send pass/user/nick
 runIRCClient :: (MonadIO m, MonadBaseControl IO m, MonadThrow m) => 
@@ -102,7 +128,7 @@ ident = takeWhile1 isIdentChar
 
 host = takeWhile1 isNonWhite
 
-prefix = char ':' >> eitherP userInfo serverName <* spaces
+prefix = spaces >> char ':' >> spaces >> eitherP userInfo serverName <* spaces
   where
     serverName = host
     userInfo = UserInfo <$> nick 
