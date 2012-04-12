@@ -12,14 +12,19 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Control
 import Control.Applicative
 
+import Data.Word
+
 --Types--
 
 type ServerName = ByteString
 
-data IRCSettings = IRCSettings { ircHost :: String
-                               , ircPort :: Int
-                               }
-                 deriving (Eq, Show, Read)
+data IRCMsg = IRCMsg { inpPrefix  :: Maybe (Either UserInfo ServerName)
+                     , inpCommand :: Either ByteString Int
+                     , inpParams  :: [ByteString]
+                     , inpMsg     :: ByteString
+                     }
+            deriving (Eq, Show, Read)
+
 
 data UserInfo = UserInfo { userNick  :: ByteString
                          , userIdent :: Maybe ByteString
@@ -28,38 +33,44 @@ data UserInfo = UserInfo { userNick  :: ByteString
               deriving (Eq, Show, Read)
 
 
-data IRCInput = IRCInput { inpPrefix  :: Maybe (Either UserInfo ServerName)
-                         , inpCommand :: Either ByteString Int
-                         , inpParams  :: [ByteString]
-                         , inpMsg     :: ByteString
-                         }
-              deriving (Eq, Show, Read)
 
-data IRCOutput
---     deriving (Eq, Show, Read)
+type IRCSource m = Source m IRCMsg
+type IRCSink   m = Sink IRCMsg m ()
 
-type IRCClient m = Source m IRCInput -> Sink IRCOutput m () -> m ()
+type IRCNode m = IRCSource m -> IRCSink m -> m ()
 
 
+data IRCClientSettings = IRCClientSettings { ircHost :: String
+                                           , ircPort :: Word16
+                                           , ircNick :: ByteString
+                                           , ircRealName :: ByteString
+                                           , ircPass :: Maybe ByteString
+                                           }
+                       deriving (Eq, Show, Read)
+
+data IRCServerSettings = IRCServerSettings { serverHost :: HostPreference
+                                           , serverPort :: Word16
+                                           }
+                       deriving (Eq, Show)
 --Pipes--
-sourceIRC :: (MonadIO m, MonadThrow m) => Socket -> Source m IRCInput
+sourceIRC :: (MonadIO m, MonadThrow m) => Socket -> IRCSource m
 sourceIRC s = sourceSocket s $= ircParseInput
 
 
-sinkIRC :: MonadIO m => Socket -> Sink IRCOutput m () 
+sinkIRC :: MonadIO m => Socket -> IRCSink m
 sinkIRC s = ircSerializeOutput =$ sinkSocket s
 
 
-ircParseInput :: (MonadIO m, MonadThrow m) => Conduit ByteString m IRCInput
+ircParseInput :: (MonadIO m, MonadThrow m) => Conduit ByteString m IRCMsg
 ircParseInput = C.sequence (sinkParser ircLine)
 
-ircSerializeOutput :: MonadIO m => Conduit IRCOutput m ByteString
+ircSerializeOutput :: MonadIO m => Conduit IRCMsg m ByteString
 ircSerializeOutput = undefined
 
-irc :: (MonadIO m, MonadBaseControl IO m, MonadThrow m) => 
-       IRCSettings -> IRCClient m -> m ()
-irc IRCSettings{ircHost = h, ircPort = p} client = 
-  runTCPClient ClientSettings{clientPort = p, clientHost = h}
+runIRCClient :: (MonadIO m, MonadBaseControl IO m, MonadThrow m) => 
+       IRCClientSettings -> IRCNode m -> m ()
+runIRCClient IRCClientSettings{ircHost = h, ircPort = p} client = 
+  runTCPClient ClientSettings{clientPort = fromIntegral p, clientHost = h}
   $ \src snk -> 
     client (src $= ircParseInput) (ircSerializeOutput =$ snk)
 
@@ -108,6 +119,6 @@ params = spaces >> (param `sepBy` spaces)
 
 mess = spaces >> char ':' >> Word8.takeWhile (not . isEndOfLine) <* endOfLine
 
-ircLine = IRCInput <$> optional prefix <*> command <*> params <*> mess
+ircLine = IRCMsg <$> optional prefix <*> command <*> params <*> mess
 
 main = undefined
