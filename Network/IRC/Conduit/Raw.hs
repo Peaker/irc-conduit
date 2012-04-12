@@ -1,4 +1,15 @@
 {-# LANGUAGE FlexibleContexts, OverloadedStrings #-}
+module Network.IRC.Conduit.Raw
+       ( -- |IRC messages
+         ServerName, IRCMsg, UserInfo
+         -- |IRC sources and sinks
+       ,  IRCSource, IRCSink, IRCNode
+       , sourceIRC, sinkIRC
+         -- |IRC conduits
+       , ircParseInput, ircSerializeOutput
+         -- |IRC clients
+        ,IRCClientSettings, runIRCClient
+        ) where
 import Network.Socket
 import Data.Conduit as C
 import Data.Conduit.Network
@@ -21,7 +32,7 @@ import Data.Char hiding (isSpace, isDigit)
 type ServerName = ByteString
 
 data IRCMsg = IRCMsg { msgPrefix  :: Maybe (Either UserInfo ServerName)
-                     , msgCommand :: Either ByteString (Char, Char, Char)
+                     , msgCmd :: Either ByteString (Char, Char, Char)
                      , msgParams  :: [ByteString]
                      , msgTrail   :: ByteString
                      }
@@ -84,7 +95,7 @@ ircSerializeOutput = do
                   maybeHost  = maybe "" ('@' `cons`) (userHost info)
       
             command = ' ' `cons` either id 
-                      (\(a,b,c) -> fromString [a,b,c]) (msgCommand msg)
+                      (\(a,b,c) -> fromString [a,b,c]) (msgCmd msg)
       
             params = ' ' `cons` intercalate " " (msgParams msg)
       
@@ -97,10 +108,16 @@ ircSerializeOutput = do
 --todo: send pass/user/nick
 runIRCClient :: (MonadIO m, MonadBaseControl IO m, MonadThrow m) => 
        IRCClientSettings -> IRCNode m -> m ()
-runIRCClient IRCClientSettings{ircHost = h, ircPort = p} client = 
-  runTCPClient ClientSettings{clientPort = fromIntegral p, clientHost = h}
-  $ \src snk -> 
-    client (src $= ircParseInput) (ircSerializeOutput =$ snk)
+runIRCClient s client = 
+  runTCPClient ClientSettings{clientPort = fromIntegral (ircPort s), 
+                              clientHost = ircHost s}
+  $ \src snk ->
+    client inp $ (ircSerializeOutput =$ snk)
+  where
+    connect = do
+      yield $ IRCMsg {msgPrefix = Nothing, msgCommand = "
+    inp = src $= ircParseInput
+    out = ircParseOutput =$ snk 
 
 
 
