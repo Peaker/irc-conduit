@@ -13,13 +13,14 @@ import Control.Monad.Trans.Control
 import Control.Applicative
 
 import Data.Word
+import Data.Char hiding (isSpace, isDigit)
 
 --Types--
 
 type ServerName = ByteString
 
 data IRCMsg = IRCMsg { inpPrefix  :: Maybe (Either UserInfo ServerName)
-                     , inpCommand :: Either ByteString Int
+                     , inpCommand :: Either ByteString (Char, Char, Char)
                      , inpParams  :: [ByteString]
                      , inpMsg     :: ByteString
                      }
@@ -109,7 +110,9 @@ prefix = char ':' >> eitherP userInfo serverName <* spaces
 
 command = eitherP alphaComm numComm
   where alphaComm = takeWhile1 isAlpha_ascii
-        numComm   = read <$> count 3 (satisfy isDigit)
+        numComm   = (,,) <$> satisfy isDigit
+                         <*> satisfy isDigit
+                         <*> satisfy isDigit
 
 
 params = spaces >> (param `sepBy` spaces) 
