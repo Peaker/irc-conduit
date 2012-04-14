@@ -11,12 +11,14 @@ module Network.IRC.Conduit.Raw
         ,IRCClientSettings, runIRCClient
         ) where
 import Network.Socket
-import Data.Conduit
+import Data.Conduit as C
+import Data.Conduit.List as CL
 import Data.Conduit.Network
 import Data.Conduit.Attoparsec
 import Data.Attoparsec.Char8 as Char8
 import qualified Data.Attoparsec as Word8
-import Data.ByteString.Char8 as BS
+import Data.ByteString.Char8 as BS 
+  (cons, append, intercalate, ByteString, null, concat, pack, unpack)
 
 import Control.Monad
 import Control.Monad.IO.Class
@@ -28,7 +30,7 @@ import Data.Function
 import Data.Word
 import Data.String
 import Data.Char hiding (isSpace, isDigit)
-
+import Prelude hiding (takeWhile)
 
 --Types--
 
@@ -39,7 +41,7 @@ data IRCMsg = IRCMsg { msgPrefix  :: Maybe (Either UserInfo ServerName)
                      , msgParams  :: [ByteString]
                      , msgTrail   :: ByteString
                      }
-            deriving (Eq, Show, Read)
+            deriving (Eq)
 
 
 data UserInfo = UserInfo { userNick  :: ByteString
@@ -80,31 +82,47 @@ ircParseInput :: (MonadIO m, MonadThrow m) => Conduit ByteString m IRCMsg
 ircParseInput = C.sequence (sinkParser ircLine)
 
 ircSerializeOutput :: MonadIO m => Conduit IRCMsg m ByteString
-ircSerializeOutput = do
-  mayMsg <- await
-  case mayMsg of
-    Nothing  -> return ()
-    Just msg -> yield $ BS.concat [prefix, command, params, trail, "\r\n"]
+ircSerializeOutput = CL.map fromIRCMsg
+
+toIRCMsg :: ByteString -> Result IRCMsg
+toIRCMsg = parse ircLine
+
+fromIRCMsg :: IRCMsg -> ByteString
+fromIRCMsg msg = BS.concat $ [prefix, command, params, trail, "\r\n"]
+  where prefix = case msgPrefix msg of
+          Nothing -> ""
+          Just (Right serv) -> ':' `cons` serv `append` " "
+          Just (Left info) -> ':' `cons` userNick info
+                              `append` maybeUser
+                              `append` maybeHost
+            where 
+              maybeUser  = maybe ""  ('!' `cons`) (userName info)
+              maybeHost  = maybe " " ('@' `cons`) (userHost info)
       
-      where prefix = case msgPrefix msg of
-              Nothing -> ""
-              Just (Right serv) -> ':' `cons` serv
-              Just (Left info) -> ':' `cons` userNick info
-                                  `append` maybeUser
-                                  `append` maybeHost
-                where 
-                  maybeUser  = maybe "" ('!' `cons`) (userName info)
-                  maybeHost  = maybe "" ('@' `cons`) (userHost info)
+        command = either id 
+                  (\(a,b,c) -> fromString [a,b,c]) (msgCmd msg)            
+          
+        params = ' ' `cons` intercalate " " (msgParams msg)
       
-            command = ' ' `cons` either id 
-                      (\(a,b,c) -> fromString [a,b,c]) (msgCmd msg)
+        t = msgTrail msg
+        trail
+          | BS.null t = ""
+          | otherwise = " :" `append` msgTrail msg
+
+instance Show IRCMsg where
+  show = BS.unpack . fromIRCMsg
+  
+instance Read IRCMsg where
+  readsPrec _ str = 
+    case toIRCMsg (BS.pack str) of
+      Word8.Done leftover msg -> [(msg, BS.unpack leftover)]
+      _ -> []
+
       
-            params = ' ' `cons` intercalate " " (msgParams msg)
-      
-            t = msgTrail msg
-            trail
-              | BS.null t = ""
-              | otherwise = " :" `append` msgTrail msg
+printOutput :: MonadIO m => Conduit IRCMsg m IRCMsg 
+printOutput = CL.mapM $ \msg -> do
+                                liftIO $ print msg
+                                return msg
                       
 
 --todo: send pass/user/nick
@@ -116,21 +134,40 @@ runIRCClient s client =
     $ \src snk -> 
       let inp = src $= ircParseInput
           out = ircSerializeOutput =$ snk  
-      in client inp (connect =$ out)
+      in client (inp) (connect =$ out)
   where
     connect = do
       case ircPass s of
         Just pass -> yield $ msg "PASS" [pass] ""
         Nothing   -> return ()
-      yield $ msg "NICK" [ircNick s] ""
       yield $ msg "USER" [ircUser s, "*", "*"] (ircRealName s)
-      forever $ await >>= maybe (return ()) yield
-    msg cmd params trail = IRCMsg Nothing (Left cmd) params trail
+      yield $ msg "NICK" [ircNick s] ""
+      printOutput
+      where
+        msg cmd params trail = IRCMsg Nothing (Left cmd) params trail
 
-
-
+main = do
+  runIRCClient IRCClientSettings {ircHost = ""
+                                 , ircPort = 6667
+                                 , ircNick = "ero"
+                                 , ircUser = "bot"
+                                 , ircRealName = "."
+                                 , ircPass = Nothing 
+                                 }
+    $ \src snk -> ((src) $$ (test =$ snk) :: IO ())
+    where
+      test = do
+        --fix $ \p -> await >>= maybe (return ()) (\i -> liftIO (print i) >> p)
+        yield $ msg "JOIN" ["#haskell"] ""
+        yield $ msg "PRIVMSG" ["#haskell"] "Hello, World!"
+        yield $ msg "QUIT" [] ""
+        where
+          msg cmd params trail = IRCMsg Nothing (Left cmd) params trail
+          
+          
 --Parsers--
-spaces = takeWhile1 isSpace
+spaces = takeWhile isSpace   <?> "optional whitespace"
+spaces1 = takeWhile1 isSpace <?> "whitespace"
 
 isAlphanum c = isAlpha_ascii c || isDigit c
 
@@ -140,39 +177,41 @@ isChanPrefix c = c == '#' || c  == '$'
 isChanChar c = isNonWhite c && c /= ','
 
 chan = cons 
-       <$> satisfy isChanPrefix 
-       <*> takeWhile1 isChanChar
+       <$> (satisfy isChanPrefix  <?> "channel prefix")
+       <*> (takeWhile1 isChanChar <?> "channel name")
 
 isNickChar c = isNonWhite c && c /= '!' && c /= '@'
 
-nick = takeWhile1 isNickChar
+nick = takeWhile1 isNickChar <?> "nick"
 
 isUserChar c = isNonWhite c && c /= '@'
 
-ident = takeWhile1 isUserChar
+user = takeWhile1 isUserChar <?> "username"
 
-host = takeWhile1 isNonWhite
+host = takeWhile1 isNonWhite <?> "hostname"
 
-prefix = spaces >> char ':' >> spaces >> eitherP userInfo serverName <* spaces
+prefix = spaces >> char ':' >> spaces >> eitherP userInfo serverName
+         <?> "prefix"
   where
     serverName = host
     userInfo = UserInfo <$> nick 
-                        <*> optional (char '!' >> ident)
+                        <*> optional (char '!' >> user)
                         <*> optional (char '@' >> host)
 
-command = eitherP alphaComm numComm
-  where alphaComm = takeWhile1 isAlpha_ascii
+command = spaces1 >> eitherP alphaComm numComm
+  where alphaComm = takeWhile1 isAlpha_ascii <?> "command name"
         numComm   = (,,) <$> satisfy isDigit
                          <*> satisfy isDigit
                          <*> satisfy isDigit
+                         <?> "numeric command"
 
-params = spaces >> (param `sepBy` spaces) 
+params = spaces1 >> param `sepBy` spaces <?> "params list"
   where param = cons
                 <$> satisfy (\c -> isNonWhite c && c /= ':')
                 <*> Char8.takeWhile isNonWhite
 
-mess = spaces >> char ':' >> Word8.takeWhile (not . isEndOfLine) <* endOfLine
+mess = spaces1 >> char ':' >> Word8.takeWhile (not . isEndOfLine) <* endOfLine
+       <?> "message body"
 
 ircLine = IRCMsg <$> optional prefix <*> command <*> params <*> mess
-
-main = undefined
+          <?> "IRC line"
